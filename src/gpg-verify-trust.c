@@ -18,7 +18,7 @@
 /*
  * compile with gcc gpg-verify-trust.c -lgpgme -o verify_trust
  *
- * verify_trust(sig_file, data_file)
+ * verify_trust(sig_file, data_file, gpg_home)
  *
  * returns 3 for ultimate trust,
  * returns 2 for full trust.
@@ -27,16 +27,76 @@
  * returns -1 for error.
  */
 
-
 #include <gpgme.h>
 #include <string.h>
+#include <argp.h>
+
+const char *argp_program_version = "gpg-verify-trust 0.1";
+const char *argp_program_bug_address = "mail@chris-stones.uk";
+static char doc[] = "gpg-verify-trust -- check the trust level of the key used to sign a file.";
+static char args_doc[] = "DATA_FILE_SIG  DATA_FILE";
+
+static struct argp_option options[] = {
+  {"homedir",   'H', "gpg_homedir", 0,  "GnuPG homedir." },
+  { 0 }
+};
+
+struct arguments {
+	const char * sigdir;
+	const char * sigfile;
+	const char * file;
+};
+
+static error_t parse_opt (int key, char *arg, struct argp_state *state)
+{
+  struct arguments *arguments = (struct arguments *)state->input;
+
+  switch (key)
+  {
+  case 'H':
+	  arguments->sigdir = arg;
+	  break;
+  case ARGP_KEY_ARG:
+	if (state->arg_num == 0)
+		arguments->sigfile = arg;
+	else if (state->arg_num == 1)
+		arguments->file = arg;
+	else
+		argp_usage (state);
+	break;
+  case ARGP_KEY_END:
+	if (state->arg_num < 2)
+	  argp_usage (state);
+	break;
+  default:
+      return ARGP_ERR_UNKNOWN;
+	  break;
+  }
+  return 0;
+}
 
 /***
  * Much code taken from _alpm_gpgme_checksig in pacman/lib/libalpm/signing.c
  * 	https://www.archlinux.org/pacman/
  */
 
-int verify_trust(const char * sigpath, const char * path) {
+static int gpgme_init(const char * sigdir) {
+
+	gpgme_error_t gpg_err = 0;
+
+	gpgme_check_version(NULL); // NOTE: initialises the library.
+
+	// Require GPG engine.
+	if((gpg_err = gpgme_engine_check_version(GPGME_PROTOCOL_OpenPGP)) != GPG_ERR_NO_ERROR)
+		return gpg_err;
+
+	if((gpg_err = gpgme_set_engine_info(GPGME_PROTOCOL_OpenPGP, NULL, sigdir))  != GPG_ERR_NO_ERROR)
+		return gpg_err;
+
+	return 0;
+}
+
+static int verify_trust(const char * sigpath, const char * path, const char * gpg_home) {
 
 	int best_validity = -1;
 	int sigcount;
@@ -51,14 +111,15 @@ int verify_trust(const char * sigpath, const char * path) {
 	memset(&sigdata, 0, sizeof(sigdata));
 	memset(&filedata, 0, sizeof(filedata));
 
+	if(gpgme_init(gpg_home) != GPG_ERR_NO_ERROR)
+		goto error;
+
 	sigfile = fopen(sigpath, "rb");
 
 	file = fopen(path, "rb");
 
 	if(!file || !sigfile)
 		goto error;
-
-	gpgme_check_version(NULL); // NOTE: initialises the library.
 
 	gpg_err = gpgme_new(&ctx);
 
@@ -144,11 +205,13 @@ error:
 
 int main(int argc, char * argv[]) {
 
-	if(argc==3)
-		return verify_trust(argv[1],argv[2]);
+	struct arguments _args;
+	memset(&_args, 0, sizeof _args);
 
-	printf("useage: %s sig_file data_file\n", argv[0]);
+	static struct argp argp = { options, parse_opt, args_doc, doc };
 
-	return -1;
+	argp_parse (&argp, argc, argv, 0, 0, &_args);
+
+	return verify_trust(_args.sigfile, _args.file, _args.sigdir);
 }
 
