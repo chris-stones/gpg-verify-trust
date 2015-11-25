@@ -27,6 +27,11 @@
  * returns -1 for error.
  */
 
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <fcntl.h>
+#include <unistd.h>
+
 #include <gpgme.h>
 #include <string.h>
 #include <argp.h>
@@ -65,7 +70,7 @@ static error_t parse_opt (int key, char *arg, struct argp_state *state)
 		argp_usage (state);
 	break;
   case ARGP_KEY_END:
-	if (state->arg_num < 2)
+	if (state->arg_num < 1)
 	  argp_usage (state);
 	break;
   default:
@@ -106,6 +111,7 @@ static int verify_trust(const char * sigpath, const char * path, const char * gp
 	gpgme_verify_result_t verify_result;
 	gpgme_signature_t gpgsig;
 	FILE *file = NULL, *sigfile = NULL;
+	int dev_null_fd = 0;
 
 	memset(&ctx, 0, sizeof(ctx));
 	memset(&sigdata, 0, sizeof(sigdata));
@@ -116,28 +122,38 @@ static int verify_trust(const char * sigpath, const char * path, const char * gp
 
 	sigfile = fopen(sigpath, "rb");
 
-	file = fopen(path, "rb");
+	if(path)
+		file = fopen(path, "rb");
+	else
+		dev_null_fd = open("/dev/null", O_RDWR);
 
-	if(!file || !sigfile)
+
+	if(!sigfile || (path && !file) || (!path && !dev_null_fd))
 		goto error;
 
 	gpg_err = gpgme_new(&ctx);
 
 	/* create our necessary data objects to verify the signature */
-	gpg_err = gpgme_data_new_from_stream(&filedata, file);
+	if(file)
+		gpg_err = gpgme_data_new_from_stream(&filedata, file);
+	else
+		gpg_err = gpgme_data_new_from_fd(&filedata, dev_null_fd);
 
 	/* file-based, it is on disk */
 	gpg_err = gpgme_data_new_from_stream(&sigdata, sigfile);
 
 
 	/* here's where the magic happens */
-	gpg_err = gpgme_op_verify(ctx, sigdata, filedata, NULL);
+	gpg_err = gpgme_op_verify(
+		ctx,
+		sigdata,
+		file ? filedata : NULL,
+		file ? NULL     : filedata);
 
 	verify_result = gpgme_op_verify_result(ctx);
 
-	if(!verify_result || !verify_result->signatures) {
+	if(!verify_result || !verify_result->signatures)
 		goto gpg_error;
-	}
 
 	for(gpgsig = verify_result->signatures, sigcount = 0; gpgsig;
 				gpgsig = gpgsig->next, sigcount++) {
@@ -175,12 +191,12 @@ gpg_error:
 	gpgme_release(ctx);
 
 error:
-	if(sigfile) {
+	if(sigfile)
 		fclose(sigfile);
-	}
-	if(file) {
+	if(file)
 		fclose(file);
-	}
+	if(dev_null_fd)
+		close(dev_null_fd);
 
 	switch(best_validity) {
 	case 0:
